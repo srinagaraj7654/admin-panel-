@@ -7,7 +7,7 @@
    ══════════════════════════════════════════════════════════════════════════ */
 import { Suspense, lazy, useEffect, useState } from 'react'
 import { supabase } from './supabase.js'
-import { ACCESS_API_ENABLED, fetchMyAccess } from './access/accessApi.js'
+import { ACCESS_API_ENABLED, accessApi, accessError, fetchMyAccess } from './access/accessApi.js'
 import { toast } from './toast.js'
 import ToastHost from './components/ToastHost.jsx'
 import SetPasswordScreen from './components/admin/SetPasswordScreen.jsx'
@@ -42,11 +42,11 @@ function Card({ children }) {
   )
 }
 
-function AdminLogin() {
+function AdminLogin({ notice = '' }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState('')
+  const [err, setErr] = useState(notice)   // e.g. "not an admin account" after an automatic sign-out
   const [info, setInfo] = useState('')
 
   const signIn = async (e) => {
@@ -58,11 +58,15 @@ function AdminLogin() {
     setBusy(false)
     if (error) setErr(error.message)          // success → onAuthStateChange in AdminApp takes over
   }
+  // "Forgot password?" goes through the admin server: it sends the reset email ONLY to admin accounts and
+  // answers every email the same way (so it can't be used to find out who the admins are).
   const forgot = async () => {
     setErr(''); setInfo('')
-    if (!email.trim()) return setErr('Enter your email address first.')
-    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin })
-    if (error) setErr(error.message); else setInfo('Password reset link sent — check your inbox (and spam folder).')
+    if (!/^[^s@]+@[^s@]+.[^s@]+$/.test(email.trim())) return setErr('Enter your admin email address first.')
+    try {
+      const { data } = await accessApi.post('/api/auth/forgot-password', { email: email.trim() })
+      setInfo(data?.message || 'If this email belongs to an admin account, a password reset link has been sent.')
+    } catch (e) { setErr(accessError(e)) }
   }
   return (
     <Card>
@@ -74,7 +78,7 @@ function AdminLogin() {
         <input className="lm-input" type="password" placeholder="Password" autoComplete="current-password" aria-label="Password"
           value={password} onChange={(e) => setPassword(e.target.value)}/>
         <button type="button" className="lm-link self-end" onClick={forgot} style={{ fontSize: 12.5 }}>Forgot password?</button>
-        {info && <p className="text-xs rounded-lg px-3 py-2" style={{ color: '#15803d', background: '#f0fdf4', border: '1px solid #bbf7d0', margin: 0 }}>✓ {info}</p>}
+        {info && !err && <p className="text-xs rounded-lg px-3 py-2" style={{ color: '#15803d', background: '#f0fdf4', border: '1px solid #bbf7d0', margin: 0 }}>✓ {info}</p>}
         {err && <p className="lm-error" role="alert">{err}</p>}
         <button type="submit" className="lm-btn is-primary" disabled={busy} style={{ height: 44, justifyContent: 'center' }}>
           {busy ? 'Signing in…' : 'Sign in'}
@@ -101,6 +105,7 @@ export default function AdminApp() {
   const [user, setUser] = useState(undefined)            // undefined = still checking the session
   const [access, setAccess] = useState(null)             // { role, domains } from the admin access server
   const [accessState, setAccessState] = useState('idle') // idle | loading | ok | error
+  const [loginNotice, setLoginNotice] = useState('')     // shown on the sign-in page after a rejected account
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setUser(data?.session?.user || null))
@@ -112,6 +117,18 @@ export default function AdminApp() {
     setAccessState('loading')
     const a = await fetchMyAccess()
     if (!a) { setAccess(null); setAccessState('error'); return }
+    // Only admins created / granted by the super admin (and super admins) may use this panel. Any other
+    // Supabase account (e.g. a student) is signed out straight away and sent back to the sign-in page.
+    // (The admin server also refuses every admin request from such accounts.)
+    if (!['admin', 'super_admin'].includes(a.role)) {
+      const email = a.user?.email || 'This account'
+      setLoginNotice(`${email} is not an admin account. Only accounts created by the super admin can sign in here.`)
+      setAccess(null); setAccessState('idle')
+      await supabase.auth.signOut()
+      setUser(null)
+      return
+    }
+    setLoginNotice('')
     setAccess(a); setAccessState('ok')
   }
   useEffect(() => {
@@ -128,13 +145,21 @@ export default function AdminApp() {
   } else if (user === undefined) {
     screen = <Spinner/>
   } else if (!user) {
-    screen = <AdminLogin/>
+    screen = <AdminLogin key={loginNotice} notice={loginNotice}/>
   } else if (accessState === 'loading' || accessState === 'idle') {
     screen = <Spinner label="Checking your access…"/>
   } else if (accessState === 'error') {
     screen = <Message title="Can't reach the admin server"
       body="Make sure the admin server is running (npm run dev in server-for-admin-panel-) and allows this address in ALLOWED_ORIGINS."
       onRetry={loadAccess} onLogout={logout}/>
+  } else if (access?.recovery && ['admin', 'super_admin'].includes(access?.role)) {
+    // Opened a "Forgot password?" link → choose a new password, then sign in again with it.
+    screen = <SetPasswordScreen mode="recovery" user={user} onLogout={logout}
+      onDone={async () => {
+        setLoginNotice('')
+        toast('Password changed — sign in with your new password', 'success')
+        await supabase.auth.signOut(); setUser(null)
+      }}/>
   } else if (access?.mustChangePassword) {
     // Temporary password from the super admin → set a permanent one. Decided by the admin server (always
     // current), not the session stored in the browser (can still carry the old flag after the change).

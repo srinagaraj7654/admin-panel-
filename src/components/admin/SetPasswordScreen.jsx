@@ -10,7 +10,8 @@ import { useState } from 'react'
 import { supabase } from '../../supabase.js'
 import { accessApi, accessError } from '../../access/accessApi.js'
 
-export default function SetPasswordScreen({ user, onDone, onLogout }) {
+// mode: 'temporary' (first sign-in with the super admin's password) | 'recovery' (opened a "Forgot password?" link)
+export default function SetPasswordScreen({ user, onDone, onLogout, mode = 'temporary' }) {
   const [pw, setPw] = useState('')
   const [pw2, setPw2] = useState('')
   const [show, setShow] = useState(false)
@@ -40,10 +41,12 @@ export default function SetPasswordScreen({ user, onDone, onLogout }) {
       <form onSubmit={submit} className="lm-card" style={{ width: '100%', maxWidth: 420, padding: '28px 24px', display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div>
           <div className="lm-eyebrow">Admin account</div>
-          <h2 className="lm-title" style={{ margin: '4px 0 6px' }}>Set your password</h2>
+          <h2 className="lm-title" style={{ margin: '4px 0 6px' }}>{mode === 'recovery' ? 'Choose a new password' : 'Set your password'}</h2>
           <p className="lm-sub" style={{ margin: 0 }}>
-            You signed in as <b>{user?.email}</b> with a temporary password from your super admin.
-            Choose your own permanent password to continue.
+            {mode === 'recovery'
+              ? <>You opened a password reset link for <b>{user?.email}</b>. Choose a new password, then sign in with it.</>
+              : <>You signed in as <b>{user?.email}</b> with a temporary password from your super admin.
+                Choose your own permanent password to continue.</>}
           </p>
         </div>
         <label className="lm-field">
@@ -59,7 +62,7 @@ export default function SetPasswordScreen({ user, onDone, onLogout }) {
           <input className="lm-input" type={show ? 'text' : 'password'} value={pw2} onChange={(e) => setPw2(e.target.value)} autoComplete="new-password"/>
         </label>
         {err && <p className="lm-error" role="alert" style={{ margin: 0 }}>{err}</p>}
-        <button type="submit" className="lm-btn is-primary" disabled={busy}>{busy ? 'Saving…' : 'Save password & continue'}</button>
+        <button type="submit" className="lm-btn is-primary" disabled={busy}>{busy ? 'Saving…' : mode === 'recovery' ? 'Save new password' : 'Save password & continue'}</button>
         <button type="button" className="lm-link" onClick={onLogout} style={{ alignSelf: 'center' }}>Sign out</button>
       </form>
     </div>
