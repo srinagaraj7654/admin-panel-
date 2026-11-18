@@ -1,12 +1,12 @@
 /* ══════════════════════════════════════════════════════════════════════════
    MockTest ADMIN PANEL — separate project (folder admin-panel/, `npm run dev` → http://localhost:3001).
-   Flow: sign in (email + password only) → temporary password? set a permanent one →
-   role from the admin access server → AdminPage.
+   Flow: sign in (email + password only, checked by the Node server) → temporary password? set a permanent
+   one → role from the admin access server → AdminPage. No direct Supabase calls (src/auth/session.js).
    Needs the admin access server (VITE_ACCESS_API_URL); it decides who is an admin.
    Styles: Tailwind + the `lm-*` classes in src/index.css.
    ══════════════════════════════════════════════════════════════════════════ */
 import { Suspense, lazy, useEffect, useState } from 'react'
-import { supabase } from './supabase.js'
+import * as session from './auth/session.js'
 import { ACCESS_API_ENABLED, accessApi, accessError, fetchMyAccess } from './access/accessApi.js'
 import { toast } from './toast.js'
 import ToastHost from './components/ToastHost.jsx'
@@ -54,15 +54,14 @@ function AdminLogin({ notice = '' }) {
     setErr(''); setInfo('')
     if (!email.trim() || !password) return setErr('Enter your email and password.')
     setBusy(true)
-    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password })
-    setBusy(false)
-    if (error) setErr(error.message)          // success → onAuthStateChange in AdminApp takes over
+    // The server checks the password AND that this is an admin account; non-admins get an error, no session.
+    try { await session.login(email.trim(), password) } catch (e2) { setErr(session.errorText(e2)) } finally { setBusy(false) }
   }
   // "Forgot password?" goes through the admin server: it sends the reset email ONLY to admin accounts and
   // answers every email the same way (so it can't be used to find out who the admins are).
   const forgot = async () => {
     setErr(''); setInfo('')
-    if (!/^[^s@]+@[^s@]+.[^s@]+$/.test(email.trim())) return setErr('Enter your admin email address first.')
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return setErr('Enter your admin email address first.')
     try {
       const { data } = await accessApi.post('/api/auth/forgot-password', { email: email.trim() })
       setInfo(data?.message || 'If this email belongs to an admin account, a password reset link has been sent.')
@@ -107,10 +106,13 @@ export default function AdminApp() {
   const [accessState, setAccessState] = useState('idle') // idle | loading | ok | error
   const [loginNotice, setLoginNotice] = useState('')     // shown on the sign-in page after a rejected account
 
+  // Session from the Node server (localStorage). A "Forgot password?" e-mail link brings a recovery session in the URL.
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setUser(data?.session?.user || null))
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => setUser(session?.user || null))
-    return () => sub?.subscription?.unsubscribe()
+    const fromLink = session.consumeAuthHash()
+    if (fromLink?.startsWith('error:')) setLoginNotice(fromLink.slice(6))
+    const toUser = (st) => (st ? (st.user || { id: 'link-session' }) : null)
+    setUser(toUser(session.getState()))
+    return session.onChange((st) => setUser(toUser(st)))
   }, [])
 
   const loadAccess = async () => {
@@ -124,8 +126,7 @@ export default function AdminApp() {
       const email = a.user?.email || 'This account'
       setLoginNotice(`${email} is not an admin account. Only accounts created by the super admin can sign in here.`)
       setAccess(null); setAccessState('idle')
-      await supabase.auth.signOut()
-      setUser(null)
+      await session.logout()
       return
     }
     setLoginNotice('')
@@ -136,7 +137,8 @@ export default function AdminApp() {
     loadAccess()
   }, [user?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const logout = async () => { await supabase.auth.signOut(); setUser(null) }
+  const logout = () => session.logout()
+  const me = access?.user || user || {}          // { id, email } — from the server
 
   let screen
   if (!ACCESS_API_ENABLED) {
@@ -154,25 +156,25 @@ export default function AdminApp() {
       onRetry={loadAccess} onLogout={logout}/>
   } else if (access?.recovery && ['admin', 'super_admin'].includes(access?.role)) {
     // Opened a "Forgot password?" link → choose a new password, then sign in again with it.
-    screen = <SetPasswordScreen mode="recovery" user={user} onLogout={logout}
+    screen = <SetPasswordScreen mode="recovery" user={me} onLogout={logout}
       onDone={async () => {
         setLoginNotice('')
         toast('Password changed — sign in with your new password', 'success')
-        await supabase.auth.signOut(); setUser(null)
+        await session.logout()
       }}/>
   } else if (access?.mustChangePassword) {
     // Temporary password from the super admin → set a permanent one. Decided by the admin server (always
     // current), not the session stored in the browser (can still carry the old flag after the change).
-    screen = <SetPasswordScreen user={user} onLogout={logout}
+    screen = <SetPasswordScreen user={me} onLogout={logout}
       onDone={() => { toast('Password saved — welcome!', 'success'); loadAccess() }}/>
   } else if (!['admin', 'super_admin'].includes(access?.role)) {
     screen = <Message title="No admin access"
-      body={`${user.email} is not an admin. Ask the super admin to give you access, or sign in with a different account.`} onLogout={logout}/>
+      body={`${me.email || 'This account'} is not an admin. Ask the super admin to give you access, or sign in with a different account.`} onLogout={logout}/>
   } else {
     screen = (
       <Suspense fallback={<Spinner/>}>
         <AdminPage onBack={() => { window.location.href = MAIN_SITE_URL }} onLogout={logout}
-          access={{ role: access.role, domains: access.domains || [], email: user.email }}/>
+          access={{ role: access.role, domains: access.domains || [], email: me.email }}/>
       </Suspense>
     )
   }

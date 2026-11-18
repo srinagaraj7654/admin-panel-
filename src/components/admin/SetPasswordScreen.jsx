@@ -7,7 +7,7 @@
    Styles: reuses the `lm-*` classes in src/index.css.
    ══════════════════════════════════════════════════════════════════════════ */
 import { useState } from 'react'
-import { supabase } from '../../supabase.js'
+import * as session from '../../auth/session.js'
 import { accessApi, accessError } from '../../access/accessApi.js'
 
 // mode: 'temporary' (first sign-in with the super admin's password) | 'recovery' (opened a "Forgot password?" link)
@@ -28,7 +28,7 @@ export default function SetPasswordScreen({ user, onDone, onLogout, mode = 'temp
       await accessApi.post('/api/me/password', { password: pw })
       // Saved. Don't WAIT for the session refresh — it could hang and leave this screen stuck on "Saving…".
       // The admin server is the source of truth for the flag; refresh the token in the background only.
-      supabase.auth.refreshSession().catch(() => {})
+      session.refresh().catch(() => {})      // fresh token in the background (server already has the new state)
       onDone()
     } catch (e2) {
       setErr(accessError(e2))
